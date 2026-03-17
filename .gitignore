@@ -1,0 +1,18 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+
+# Local environments and app settings
+.venv/
+.streamlit/
+
+# Local generated previews and exports
+preview_board.png
+route_preview.png
+*_board.json
+*_board.png
+*_board.pdf
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
