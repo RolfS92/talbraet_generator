@@ -2,7 +2,33 @@
 
 from dataclasses import dataclass
 
-from board_app.models import BoardType
+from board_app.models import MAX_BOARD_VALUE, BoardMatrix, BoardType, DivisorConfig
+
+
+# Rows run from rank 8 at the top to rank 1 at the bottom, as in the supplied example.
+DIVISOR_EXAMPLE_BOARD: tuple[tuple[int, ...], ...] = (
+    (76, 22, 14, 28, 39, 65, 69, 44),
+    (92, 87, 58, 23, 5, 17, 26, 30),
+    (35, 29, 17, 72, 46, 6, 24, 16),
+    (12, 38, 9, 31, 57, 84, 39, 42),
+    (48, 20, 50, 22, 15, 63, 12, 26),
+    (8, 75, 66, 91, 32, 48, 56, 19),
+    (13, 28, 41, 70, 96, 21, 60, 53),
+    (59, 34, 26, 59, 41, 12, 10, 4),
+)
+
+
+def divisor_example_board() -> BoardMatrix:
+    """Return a fresh copy so editing the example never changes the preset."""
+    return [list(row) for row in DIVISOR_EXAMPLE_BOARD]
+
+
+def divisor_example_config(divisible_by: int = 2) -> DivisorConfig:
+    config = DivisorConfig(divisible_by=divisible_by, divisible_cells=0)
+    if type(divisible_by) is not int or not 1 <= divisible_by <= MAX_BOARD_VALUE:
+        raise ValueError(f"Divisor skal være et helt tal mellem 1 og {MAX_BOARD_VALUE}.")
+    config.divisible_cells = len(config.qualifying_squares(divisor_example_board()))
+    return config
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +105,18 @@ PRESETS: tuple[Preset, ...] = (
         },
         description="Vælg selv en tabel i sidebaren og opbyg et almindeligt tabelbræt.",
     ),
+    Preset(
+        key="divisor",
+        label="Divisor-skak",
+        board_type=BoardType.DIVISOR,
+        defaults={
+            "min_value": 1,
+            "max_value": 100,
+            "divisible_by": 2,
+            "divisible_cells": 32,
+        },
+        description="Land på et tal, som den valgte divisor går op i, og få et ekstra træk.",
+    ),
 )
 
 PRESETS_BY_LABEL = {preset.label: preset for preset in PRESETS}
@@ -93,6 +131,8 @@ def preset_table_rows() -> list[dict[str, str]]:
             )
         elif preset.board_type == BoardType.HIDDEN_TABLE:
             talforloeb = "valgfri tabel skjult i valgt retning + nære random-tal"
+        elif preset.board_type == BoardType.DIVISOR:
+            talforloeb = "tilfældige tal med et valgt antal delelige felter"
         elif preset.board_type == BoardType.KNIGHT_TABLE:
             talforloeb = "valgfri tabel på ruten + random"
         elif preset.key == "motif_table":

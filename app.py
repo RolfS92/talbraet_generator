@@ -5,6 +5,7 @@ import streamlit as st
 from board_app.branding import DEFAULT_WORKSHEET_TITLE
 from board_app.exporters import board_to_json, board_to_pdf_bytes, board_to_png_bytes
 from board_app.generators import generate_board, validate_board
+from board_app.import_ui import render_image_import
 from board_app.hidden_table import (
     DEFAULT_HIDDEN_TABLE_DIRECTION,
     HIDDEN_TABLE_DIRECTIONS,
@@ -15,12 +16,17 @@ from board_app.models import (
     BoardConfig,
     BoardType,
     CyclicConfig,
+    DivisorConfig,
+    ImportedBoardConfig,
     HiddenTableConfig,
     KingTableConfig,
     KnightTableConfig,
 )
 from board_app.page_formats import DEFAULT_PAGE_FORMAT_LABEL, PAGE_FORMATS, PAGE_FORMATS_BY_LABEL, PageFormat
-from board_app.presets import PRESETS, PRESETS_BY_LABEL, Preset, preset_table_rows
+from board_app.presets import (
+    PRESETS, PRESETS_BY_LABEL, Preset, preset_table_rows,
+    divisor_example_board, divisor_example_config,
+)
 from board_app.rendering import board_to_table_html
 from board_app.route_motifs import (
     DEFAULT_ROUTE_MOTIF,
@@ -54,6 +60,10 @@ STATE_KEYS = {
     "page_format": "page_format",
     "title_auto": "worksheet_title_auto",
     "title_last_auto": "worksheet_title_last_auto",
+    "divisible_by": "divisor_factor",
+    "min_value": "divisor_min",
+    "max_value": "divisor_max",
+    "divisible_cells": "divisor_cells",
 }
 
 
@@ -62,22 +72,28 @@ def main() -> None:
     _ensure_input_state()
 
     st.title("Talbræt-generator")
-    st.caption("Talbræt med temaer og eksport til JSON, PNG og PDF.")
+    st.caption("Talbræt med divisor-skak, billedimport og eksport til JSON, PNG og PDF.")
     st.info(
         "Til matematiklærere: Brug appen til hurtigt at lave talbrætter til træning af tabeller, mønstre og logiske ruter. "
         "Vælg en opsætning, generér et nyt bræt, og hent det klar til print i A4 eller A3."
     )
 
+    import_mode = st.sidebar.radio(
+        "Opret bræt", ["Generér talbræt", "Importér billede"], key="board_source"
+    ) == "Importér billede"
     selected_preset_label = st.sidebar.selectbox(
         "Preset",
         options=[preset.label for preset in PRESETS],
         index=0,
+        disabled=import_mode,
     )
     selected_preset = PRESETS_BY_LABEL[selected_preset_label]
-    preset_changed = _sync_defaults_for_selected_preset(selected_preset, None)
+    preset_changed = False if import_mode else _sync_defaults_for_selected_preset(selected_preset, None)
 
     custom_table_factor = None
-    if selected_preset.key == "custom_table":
+    if import_mode:
+        pass
+    elif selected_preset.key == "custom_table":
         custom_table_factor = int(
             st.sidebar.number_input("Tabel", min_value=1, step=1, key=STATE_KEYS["custom_table_factor"])
         )
@@ -85,7 +101,7 @@ def main() -> None:
         st.sidebar.number_input("Tabel", min_value=2, step=1, key=STATE_KEYS["hidden_table_factor"])
     elif selected_preset.board_type in (BoardType.KNIGHT_TABLE, BoardType.KING_TABLE):
         st.sidebar.number_input("Tabel", min_value=2, step=1, key=STATE_KEYS["route_table_factor"])
-    if selected_preset.key == "motif_table":
+    if not import_mode and selected_preset.key == "motif_table":
         st.sidebar.selectbox(
             "Motiv",
             options=MOTIF_OPTIONS,
@@ -103,36 +119,47 @@ def main() -> None:
     selected_page_format_label = st.sidebar.selectbox(
         "Udskriftsformat",
         options=[page_format.label for page_format in PAGE_FORMATS],
-        index=_page_format_index(st.session_state[STATE_KEYS["page_format"]]),
         key=STATE_KEYS["page_format"],
     )
     selected_page_format = PAGE_FORMATS_BY_LABEL[selected_page_format_label]
     show_route = False
     show_start_end = False
     show_hidden_table = False
-    if selected_preset.board_type in (BoardType.KNIGHT_TABLE, BoardType.KING_TABLE):
+    show_divisor = False
+    if import_mode:
+        pass
+    elif selected_preset.board_type == BoardType.DIVISOR:
+        show_divisor = st.sidebar.checkbox("Vis felter med ekstra træk", value=False)
+    elif selected_preset.board_type in (BoardType.KNIGHT_TABLE, BoardType.KING_TABLE):
         show_route = st.sidebar.checkbox("Vis rute", key=STATE_KEYS["route_show_path"])
         show_start_end = st.sidebar.checkbox("Vis start/slut", key=STATE_KEYS["route_show_markers"])
     elif selected_preset.key == "hidden_table":
         show_hidden_table = st.sidebar.checkbox("Vis tabel", key=STATE_KEYS["hidden_show_table"])
 
-    st.sidebar.caption(_preset_description(selected_preset, custom_table_factor))
-    _sync_title_with_settings(selected_preset, custom_table_factor)
+    if import_mode:
+        st.session_state[STATE_KEYS["title_last_auto"]] = "Importeret talbræt"
+        if st.session_state.get(STATE_KEYS["title_auto"], True):
+            st.session_state["worksheet_title"] = "Importeret talbræt"
+    else:
+        st.sidebar.caption(_preset_description(selected_preset, custom_table_factor))
+        _sync_title_with_settings(selected_preset, custom_table_factor)
     st.sidebar.text_input("Titel", key="worksheet_title", on_change=_handle_title_change)
-    _ensure_board_state(selected_preset, custom_table_factor)
-
-    if preset_changed:
-        _generate_and_store_board(
-            _config_from_preset(selected_preset, custom_table_factor),
-            _preset_runtime_label(selected_preset, custom_table_factor),
-        )
-
-    submitted_config = _render_config_form(selected_preset, custom_table_factor)
-    if submitted_config is not None:
-        _generate_and_store_board(
-            submitted_config,
-            _preset_runtime_label(selected_preset, custom_table_factor),
-        )
+    if import_mode:
+        if not render_image_import():
+            return
+    else:
+        _ensure_board_state(selected_preset, custom_table_factor)
+        if preset_changed or isinstance(st.session_state["current_config"], ImportedBoardConfig):
+            _generate_and_store_board(
+                _config_from_preset(selected_preset, custom_table_factor),
+                _preset_runtime_label(selected_preset, custom_table_factor),
+            )
+        submitted_config = _render_config_form(selected_preset, custom_table_factor)
+        if submitted_config is not None:
+            _generate_and_store_board(submitted_config, _preset_runtime_label(selected_preset, custom_table_factor))
+        if selected_preset.board_type == BoardType.DIVISOR:
+            st.sidebar.button("Brug eksempelbrættet", on_click=_use_divisor_example,
+                              help="Genskab de præcise 64 tal fra eksemplet med divisor-skak.")
 
     current_title: str = st.session_state["worksheet_title"]
     current_preset_label: str = st.session_state["current_preset_label"]
@@ -141,6 +168,9 @@ def main() -> None:
     current_issues = st.session_state["current_issues"]
     current_route_path = _route_squares_for_config(current_config, current_board)
     current_highlight_squares = _highlight_squares_for_config(current_config) if show_hidden_table else None
+    rule_text = current_config.rule_text() if isinstance(current_config, DivisorConfig) else None
+    if isinstance(current_config, DivisorConfig) and show_divisor:
+        current_highlight_squares = current_config.qualifying_squares(current_board)
     current_start_square, current_end_square = (
         _route_markers_from_route(current_route_path) if show_start_end else (None, None)
     )
@@ -150,6 +180,8 @@ def main() -> None:
 
     with left_column:
         st.subheader("Talbræt")
+        if rule_text:
+            st.info(rule_text)
         st.caption(_board_description(current_config, show_route, show_start_end, show_hidden_table))
         st.markdown(
             board_to_table_html(
@@ -168,8 +200,9 @@ def main() -> None:
         if current_issues:
             for issue in current_issues:
                 st.error(issue)
+            st.caption("Det seneste gyldige bræt vises. Ret konfigurationen og generér igen for at eksportere.")
         else:
-            st.success("Brættet opfylder de valgte regler.")
+            st.success("Brættet indeholder 64 gyldige heltal." if import_mode else "Brættet opfylder de valgte regler.")
 
         st.subheader("Opsummering")
         _render_summary(
@@ -199,6 +232,7 @@ def main() -> None:
             selected_page_format,
             current_start_square,
             current_end_square,
+            rule_text=rule_text,
         )
         pdf_payload = board_to_pdf_bytes(
             current_board,
@@ -209,6 +243,7 @@ def main() -> None:
             selected_page_format,
             current_start_square,
             current_end_square,
+            rule_text=rule_text,
         )
         slug = _slugify(current_title or current_preset_label)
 
@@ -217,6 +252,7 @@ def main() -> None:
             data=json_payload,
             file_name=f"{slug}_{selected_page_format.key}_board.json",
             mime="application/json",
+            disabled=bool(current_issues),
             use_container_width=True,
         )
         st.download_button(
@@ -224,6 +260,7 @@ def main() -> None:
             data=png_payload,
             file_name=f"{slug}_{selected_page_format.key}_board.png",
             mime="image/png",
+            disabled=bool(current_issues),
             use_container_width=True,
         )
         st.download_button(
@@ -231,6 +268,7 @@ def main() -> None:
             data=pdf_payload,
             file_name=f"{slug}_{selected_page_format.key}_board.pdf",
             mime="application/pdf",
+            disabled=bool(current_issues),
             use_container_width=True,
         )
 
@@ -244,7 +282,15 @@ def main() -> None:
 def _render_config_form(preset: Preset, custom_table_factor: int | None) -> BoardConfig | None:
     with st.sidebar.form("config_form"):
         st.subheader("Konfiguration")
-        if preset.board_type == BoardType.CYCLIC:
+        if preset.board_type == BoardType.DIVISOR:
+            config = DivisorConfig(
+                divisible_by=int(st.number_input("Divisor", min_value=2, max_value=9999, step=1, key=STATE_KEYS["divisible_by"])),
+                min_value=int(st.number_input("Laveste tal på brættet", min_value=1, max_value=9999, step=1, key=STATE_KEYS["min_value"])),
+                max_value=int(st.number_input("Højeste tal på brættet", min_value=1, max_value=9999, step=1, key=STATE_KEYS["max_value"])),
+                divisible_cells=int(st.number_input("Antal felter med ekstra træk", min_value=0, max_value=64, step=1, key=STATE_KEYS["divisible_cells"])),
+            )
+            st.caption("En brik får et ekstra træk, når divisoren går op i feltets tal. Tal må gentages.")
+        elif preset.board_type == BoardType.CYCLIC:
             active_step = int(_preset_defaults(preset, custom_table_factor)["sequence_step"])
             st.caption(f"Aktivt tabelspring: {active_step}")
             config: BoardConfig = CyclicConfig(
@@ -347,7 +393,12 @@ def _render_summary(
     st.write(f"Udskriftsformat: `{page_format.label}`")
     st.write(f"Type: `{config.label}`")
     st.write(f"Min / maks på brættet: `{min(flat_values)}` / `{max(flat_values)}`")
-    if isinstance(config, CyclicConfig):
+    if isinstance(config, DivisorConfig):
+        st.write(config.rule_text())
+        st.write(f"Felter med ekstra træk: `{len(config.qualifying_squares(board))}` af `64`.")
+    elif isinstance(config, ImportedBoardConfig):
+        st.write("Tallene er kontrolleret og godkendt i billedimporten.")
+    elif isinstance(config, CyclicConfig):
         rule_text = (
             "Regel: sekvens "
             f"`{config.sequence_min}-{config.sequence_max}` i spring af `{config.sequence_step}` "
@@ -440,6 +491,12 @@ def _ensure_title_state() -> None:
 
 
 def _ensure_input_state() -> None:
+    # Preserve settings when Streamlit removes widgets hidden by another mode.
+    for key in STATE_KEYS.values():
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+    for field, default in (("divisible_by", 2), ("min_value", 1), ("max_value", 100), ("divisible_cells", 32)):
+        st.session_state.setdefault(STATE_KEYS[field], default)
     if STATE_KEYS["custom_table_factor"] not in st.session_state:
         st.session_state[STATE_KEYS["custom_table_factor"]] = 5
     if STATE_KEYS["sequence_min"] not in st.session_state:
@@ -501,6 +558,9 @@ def _sync_defaults_for_selected_preset(preset: Preset, custom_table_factor: int 
 
 
 def _config_from_preset(preset: Preset, custom_table_factor: int | None) -> BoardConfig:
+    if preset.board_type == BoardType.DIVISOR:
+        return DivisorConfig(**{field: int(st.session_state[STATE_KEYS[field]])
+                               for field in ("divisible_by", "min_value", "max_value", "divisible_cells")})
     if preset.board_type == BoardType.CYCLIC:
         return CyclicConfig(**_preset_defaults(preset, custom_table_factor))
     if preset.board_type == BoardType.HIDDEN_TABLE:
@@ -546,6 +606,8 @@ def _preset_defaults(preset: Preset, custom_table_factor: int | None) -> dict[st
 
 
 def _preset_runtime_label(preset: Preset, custom_table_factor: int | None) -> str:
+    if preset.key == "divisor":
+        return f"Divisor-skak – divisor {st.session_state[STATE_KEYS['divisible_by']]}"
     if preset.key != "custom_table":
         if preset.key == "hidden_table":
             factor = int(st.session_state[STATE_KEYS["hidden_table_factor"]])
@@ -638,6 +700,10 @@ def _state_key_for_field(field_name: str, preset: Preset) -> str | None:
             return STATE_KEYS["hidden_start_square"]
         return STATE_KEYS["route_start_square"]
     return {
+        "divisible_by": STATE_KEYS["divisible_by"],
+        "min_value": STATE_KEYS["min_value"],
+        "max_value": STATE_KEYS["max_value"],
+        "divisible_cells": STATE_KEYS["divisible_cells"],
         "sequence_min": STATE_KEYS["sequence_min"],
         "sequence_max": STATE_KEYS["sequence_max"],
         "table_spacing": STATE_KEYS["table_spacing"],
@@ -764,6 +830,10 @@ def _board_description(
     show_start_end: bool,
     show_hidden_table: bool,
 ) -> str:
+    if isinstance(config, DivisorConfig):
+        return f"Tal fra {config.min_value} til {config.max_value}. Divisor: {config.divisible_by}."
+    if isinstance(config, ImportedBoardConfig):
+        return "Dit importerede talbræt i Dansk Skoleskaks layout. Række 8 øverst og A–H fra venstre."
     if isinstance(config, CyclicConfig):
         return (
             f"Et tabelbræt med {config.sequence_step}-tabellen fra {config.sequence_min} til {config.sequence_max} "
@@ -813,6 +883,16 @@ def _hidden_table_example(table_factor: int, random_between_count: int) -> str:
         pieces.extend(["(tilfældigt tal)" for _ in range(random_between_count)])
         pieces.append(str(next_value))
     return "Eksempel: " + " ".join(pieces)
+
+
+def _use_divisor_example() -> None:
+    config = divisor_example_config(int(st.session_state[STATE_KEYS["divisible_by"]]))
+    for field in ("divisible_by", "min_value", "max_value", "divisible_cells"):
+        st.session_state[STATE_KEYS[field]] = getattr(config, field)
+    st.session_state["current_config"] = config
+    st.session_state["current_board"] = divisor_example_board()
+    st.session_state["current_preset_label"] = "Divisor-skak – eksempelbræt"
+    st.session_state["current_issues"] = validate_board(st.session_state["current_board"], config)
 
 
 if __name__ == "__main__":
