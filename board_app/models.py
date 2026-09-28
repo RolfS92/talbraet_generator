@@ -27,6 +27,7 @@ from board_app.route_motifs import (
 
 BOARD_SIZE = 8
 BOARD_CELLS = BOARD_SIZE * BOARD_SIZE
+MAX_BOARD_VALUE = 9999
 MAX_KNIGHT_ROUTE_MOVES = 31
 MAX_KING_ROUTE_MOVES = 31
 BoardMatrix = list[list[int]]
@@ -36,6 +37,8 @@ class BoardType(str, Enum):
     CYCLIC = "cyclic"
     ALTERNATING_ROWS = "alternating_rows"
     RANDOM_RULE = "random_rule"
+    DIVISOR = "divisor"
+    IMPORTED = "imported"
     HIDDEN_TABLE = "hidden_table"
     KNIGHT_TABLE = "knight_table"
     KING_TABLE = "king_table"
@@ -49,7 +52,7 @@ class BaseBoardConfig:
 
     def validate(self) -> list[str]:
         issues: list[str] = []
-        if self.board_size != BOARD_SIZE:
+        if type(self.board_size) is not int or self.board_size != BOARD_SIZE:
             issues.append("Appen understøtter kun 8x8 boards.")
         return issues
 
@@ -76,7 +79,7 @@ class CyclicConfig(BaseBoardConfig):
     label: str = field(default="Cyklisk sekvens", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.sequence_min > self.sequence_max:
             issues.append("Sekvensens minimum skal være mindre end eller lig maksimum.")
         if self.sequence_step <= 0:
@@ -136,7 +139,7 @@ class AlternatingRowsConfig(BaseBoardConfig):
     label: str = field(default="Rækkevis sekvens", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.first_row_start > self.first_row_end:
             issues.append("Første række skal have et gyldigt interval.")
         if self.second_row_start > self.second_row_end:
@@ -168,7 +171,7 @@ class RandomRuleConfig(BaseBoardConfig):
     label: str = field(default="Tilfældigt board med regler", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.min_value > self.max_value:
             issues.append("Minimum skal være mindre end eller lig maksimum.")
         if self.divisible_by <= 0:
@@ -200,6 +203,59 @@ class RandomRuleConfig(BaseBoardConfig):
 
 
 @dataclass(slots=True)
+class DivisorConfig(RandomRuleConfig):
+    min_value: int = 1
+    max_value: int = 100
+    divisible_by: int = 2
+    board_type: BoardType = field(default=BoardType.DIVISOR, init=False)
+    label: str = field(default="Divisor-skak", init=False)
+
+    def validate(self) -> list[str]:
+        issues = BaseBoardConfig.validate(self)
+        for name, value in (
+            ("Minimum", self.min_value),
+            ("Maksimum", self.max_value),
+            ("Divisor", self.divisible_by),
+        ):
+            if type(value) is not int or not 1 <= value <= MAX_BOARD_VALUE:
+                issues.append(f"{name} skal være et helt tal mellem 1 og {MAX_BOARD_VALUE}.")
+        if type(self.divisible_cells) is not int:
+            issues.append("Antal delelige felter skal være et helt tal.")
+        if issues:
+            return issues
+        return RandomRuleConfig.validate(self)
+
+    def rule_text(self) -> str:
+        return (
+            f"Hvis din brik lander på et felt med et tal, som {self.divisible_by} går op i, "
+            "får du et ekstra træk."
+        )
+
+    def qualifying_squares(self, board: BoardMatrix) -> list[tuple[int, int]]:
+        if type(self.divisible_by) is not int or self.divisible_by <= 0:
+            return []
+        return [
+            (row_index, column_index)
+            for row_index, row in enumerate(board)
+            for column_index, value in enumerate(row)
+            if type(value) is int and value % self.divisible_by == 0
+        ]
+
+
+@dataclass(slots=True)
+class ImportedBoardConfig(BaseBoardConfig):
+    source_name: str | None = None
+    board_type: BoardType = field(default=BoardType.IMPORTED, init=False)
+    label: str = field(default="Importeret talbræt", init=False)
+
+    def validate(self) -> list[str]:
+        issues = BaseBoardConfig.validate(self)
+        if self.source_name is not None and not isinstance(self.source_name, str):
+            issues.append("Billedets filnavn skal være tekst.")
+        return issues
+
+
+@dataclass(slots=True)
 class HiddenTableConfig(BaseBoardConfig):
     table_factor: int = 5
     start_square: str = "a8"
@@ -209,7 +265,7 @@ class HiddenTableConfig(BaseBoardConfig):
     label: str = field(default="Find den skjulte tabel", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.table_factor <= 1:
             issues.append("Tabellen skal være mindst 2.")
         start = parse_square(self.start_square)
@@ -260,7 +316,7 @@ class KnightTableConfig(BaseBoardConfig):
     label: str = field(default="Springerrute med tabeltal", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.table_factor <= 1:
             issues.append("Tabellen skal være mindst 2, så random-felterne kan være ikke-tabelltal.")
         if self.move_count < 0:
@@ -330,7 +386,7 @@ class KingTableConfig(BaseBoardConfig):
     label: str = field(default="Kongerute med tabeltal", init=False)
 
     def validate(self) -> list[str]:
-        issues = super().validate()
+        issues = BaseBoardConfig.validate(self)
         if self.table_factor <= 1:
             issues.append("Tabellen skal være mindst 2, så random-felterne kan være ikke-tabelltal.")
         if self.random_min > self.random_max:
@@ -445,6 +501,8 @@ BoardConfig = (
     CyclicConfig
     | AlternatingRowsConfig
     | RandomRuleConfig
+    | DivisorConfig
+    | ImportedBoardConfig
     | HiddenTableConfig
     | KnightTableConfig
     | KingTableConfig

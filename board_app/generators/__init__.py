@@ -8,6 +8,10 @@ from board_app.generators.alternating_rows import (
 )
 from board_app.generators.cyclic import generate_board as generate_cyclic_board
 from board_app.generators.cyclic import validate_board as validate_cyclic_board
+from board_app.generators.divisor import generate_board as generate_divisor_board
+from board_app.generators.divisor import validate_board as validate_divisor_board
+from board_app.generators.imported import generate_board as generate_imported_board
+from board_app.generators.imported import validate_board as validate_imported_board
 from board_app.generators.hidden_table import generate_board as generate_hidden_table_board
 from board_app.generators.hidden_table import validate_board as validate_hidden_table_board
 from board_app.generators.random_rule import generate_board as generate_random_rule_board
@@ -21,7 +25,9 @@ from board_app.models import (
     BoardConfig,
     BoardMatrix,
     CyclicConfig,
+    DivisorConfig,
     HiddenTableConfig,
+    ImportedBoardConfig,
     KingTableConfig,
     KnightTableConfig,
     RandomRuleConfig,
@@ -29,6 +35,10 @@ from board_app.models import (
 
 
 def generate_board(config: BoardConfig) -> BoardMatrix:
+    if isinstance(config, DivisorConfig):
+        return generate_divisor_board(config)
+    if isinstance(config, ImportedBoardConfig):
+        return generate_imported_board(config)
     if isinstance(config, CyclicConfig):
         return generate_cyclic_board(config)
     if isinstance(config, AlternatingRowsConfig):
@@ -45,6 +55,10 @@ def generate_board(config: BoardConfig) -> BoardMatrix:
 
 
 def validate_board(board: BoardMatrix, config: BoardConfig) -> list[str]:
+    if isinstance(config, DivisorConfig):
+        return validate_divisor_board(board, config)
+    if isinstance(config, ImportedBoardConfig):
+        return validate_imported_board(board, config)
     if isinstance(config, CyclicConfig):
         return validate_cyclic_board(board, config)
     if isinstance(config, AlternatingRowsConfig):

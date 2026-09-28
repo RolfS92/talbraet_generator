@@ -86,6 +86,7 @@ def board_to_png_bytes(
     page_format: PageFormat = DEFAULT_PAGE_FORMAT,
     start_square: tuple[int, int] | None = None,
     end_square: tuple[int, int] | None = None,
+    rule_text: str | None = None,
 ) -> bytes:
     image = _compose_sheet_image(
         board,
@@ -96,6 +97,7 @@ def board_to_png_bytes(
         page_format,
         start_square,
         end_square,
+        rule_text,
     )
     buffer = BytesIO()
     image.save(buffer, format="PNG", dpi=(EXPORT_DPI, EXPORT_DPI))
@@ -111,6 +113,7 @@ def board_to_pdf_bytes(
     page_format: PageFormat = DEFAULT_PAGE_FORMAT,
     start_square: tuple[int, int] | None = None,
     end_square: tuple[int, int] | None = None,
+    rule_text: str | None = None,
 ) -> bytes:
     image = _compose_sheet_image(
         board,
@@ -121,6 +124,7 @@ def board_to_pdf_bytes(
         page_format,
         start_square,
         end_square,
+        rule_text,
     ).convert("RGB")
     buffer = BytesIO()
     image.save(buffer, format="PDF", resolution=float(EXPORT_DPI))
@@ -136,6 +140,7 @@ def _compose_sheet_image(
     page_format: PageFormat = DEFAULT_PAGE_FORMAT,
     start_square: tuple[int, int] | None = None,
     end_square: tuple[int, int] | None = None,
+    rule_text: str | None = None,
 ) -> Image.Image:
     metrics = _sheet_metrics(page_format)
     image = Image.new("RGBA", (metrics["page_width"], metrics["page_height"]), "#ffffff")
@@ -144,7 +149,7 @@ def _compose_sheet_image(
     title_font = _load_font(metrics["title_font_size"], bold=True, prefer_calibri=True)
     footer_font = _load_font(metrics["footer_font_size"], bold=False, prefer_calibri=True)
 
-    _draw_header(draw, image, worksheet_title, title_font, metrics)
+    _draw_header(draw, image, worksheet_title, title_font, metrics, rule_text)
     _draw_board(draw, image, board, theme, highlight_squares, route_squares, metrics, start_square, end_square)
     _draw_footer(draw, footer_font, metrics)
 
@@ -157,9 +162,34 @@ def _draw_header(
     worksheet_title: str,
     title_font: ImageFont.ImageFont,
     metrics: dict[str, int],
+    rule_text: str | None = None,
 ) -> None:
     title_position = (metrics["page_margin_x"], metrics["page_margin_top"] + metrics["title_offset_y"])
+    text_width = (
+        metrics["page_width"] - 2 * metrics["page_margin_x"]
+        - metrics["logo_max_width"] - metrics["content_gap"]
+    )
+    title_size = metrics["title_font_size"]
+    while draw.textlength(worksheet_title, font=title_font) > text_width and title_size > 18:
+        title_size -= 1
+        title_font = _load_font(title_size, bold=True, prefer_calibri=True)
     draw.text(title_position, worksheet_title, font=title_font, fill="#111111")
+
+    if rule_text:
+        title_bottom = draw.textbbox(title_position, worksheet_title, font=title_font)[3]
+        rule_y = title_bottom + round(metrics["page_height"] * 0.009)
+        rule_bottom = metrics["page_margin_top"] + metrics["header_height"]
+        rule_size = metrics["footer_font_size"]
+        while True:
+            rule_font = _load_font(rule_size, bold=False, prefer_calibri=True)
+            lines = _wrap_text(draw, rule_text, rule_font, text_width)
+            line_height = round(rule_size * 1.3)
+            if rule_y + len(lines) * line_height <= rule_bottom or rule_size <= 12:
+                break
+            rule_size -= 1
+        for line in lines:
+            draw.text((metrics["page_margin_x"], rule_y), line, font=rule_font, fill="#111111", anchor="lt")
+            rule_y += line_height
 
     logo = logo_image()
     if logo is None:
@@ -172,6 +202,26 @@ def _draw_header(
     x_position = metrics["page_width"] - metrics["page_margin_x"] - scaled_logo.width
     y_position = metrics["page_margin_top"]
     image.alpha_composite(scaled_logo, (x_position, y_position))
+
+
+def _wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> list[str]:
+    lines: list[str] = []
+    line = ""
+    for word in text.split():
+        candidate = f"{line} {word}" if line else word
+        if line and draw.textlength(candidate, font=font) > max_width:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
 
 
 def _draw_board(
@@ -596,6 +646,18 @@ def _load_font(size: int, bold: bool, prefer_calibri: bool) -> ImageFont.ImageFo
         candidates.extend(["arialbd.ttf", "segoeuib.ttf", "segoeui.ttf", "arial.ttf", "tahoma.ttf"])
     else:
         candidates.extend(["segoeui.ttf", "arial.ttf", "tahoma.ttf"])
+    # Streamlit deployments commonly run on Linux, without Windows fonts.
+    dejavu_name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    liberation_name = "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf"
+    candidates.extend([
+        dejavu_name,
+        f"/usr/share/fonts/truetype/dejavu/{dejavu_name}",
+        liberation_name,
+        f"/usr/share/fonts/truetype/liberation2/{liberation_name}",
+        f"/usr/share/fonts/truetype/liberation/{liberation_name}",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold
+        else "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ])
 
     seen: set[str] = set()
     for candidate in candidates:
@@ -606,7 +668,10 @@ def _load_font(size: int, bold: bool, prefer_calibri: bool) -> ImageFont.ImageFo
             return ImageFont.truetype(candidate, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow 10.0 did not yet accept a font size.
+        return ImageFont.load_default()
 
 
 def _hex_to_rgba(color: str, alpha: int) -> tuple[int, int, int, int]:
